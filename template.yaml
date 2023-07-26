@@ -2,8 +2,16 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: 'AWS CloudFormation Template to update config recorder settings in child accounts created by ControlTower.'
 Parameters:
 
-  ExcludedAccounts:
-    Description: Excluded Accounts list. This list should contain Management account, Log Archive and Audit accounts at the minimum
+  AccountsAction:
+    Description: The accounts that you want to include or exclude. Select required action.
+    Default: 'EXCLUDEACCOUNTS'
+    AllowedValues: ['EXCLUDEACCOUNTS', 'INCLUDEACCOUNTS']
+    MaxLength: '2000'
+    MinLength: '36'
+    Type: String
+
+  AccountsList:
+    Description: List of account to be excluded or included, depending on the Action selected in AccountAction parameter.
     Default: "['111111111111', '222222222222', '333333333333']"
     MaxLength: '2000'
     MinLength: '36'
@@ -13,6 +21,11 @@ Parameters:
     Description: List of all resource types to be excluded from Config Recorder
     Default: "AWS::HealthLake::FHIRDatastore,AWS::Pinpoint::Segment,AWS::Pinpoint::ApplicationSettings"
     Type: String
+
+  SourceS3BucketName:
+    AllowedPattern: ^[0-9a-zA-Z]+([0-9a-zA-Z-]*[0-9a-zA-Z])*$
+    Type: String
+    Default: vinjak-outbox
 
   CloudFormationVersion:
     Type: String
@@ -45,18 +58,19 @@ Resources:
             ReservedConcurrentExecutions: 1
             Environment:
                 Variables:
-                    EXCLUDED_ACCOUNTS: !Ref ExcludedAccounts
+                    ACTION: !Ref AccountsAction
+                    ACCOUNTS_LIST: !Ref AccountsList
                     LOG_LEVEL: INFO
                     SQS_URL: !Ref SQSConfigRecorder
 
-    ProducerLambdaPermissions:                
+    ProducerLambdaPermissions:
       Type: AWS::Lambda::Permission
       DeletionPolicy: Retain
       Properties: 
         Action: 'lambda:InvokeFunction'
         FunctionName: !Ref ProducerLambda
         Principal: 'events.amazonaws.com'
-        SourceArn: !GetAtt ProducerEventTrigger.Arn             
+        SourceArn: !GetAtt ProducerEventTrigger.Arn
       
     ConsumerLambda:
         Type: AWS::Lambda::Function
@@ -86,7 +100,7 @@ Resources:
           BatchSize: 1
           Enabled: true
           EventSourceArn: !GetAtt SQSConfigRecorder.Arn
-          FunctionName: !GetAtt ConsumerLambda.Arn                
+          FunctionName: !GetAtt ConsumerLambda.Arn
     
     ProducerLambdaExecutionRole:
         Type: 'AWS::IAM::Role'
@@ -103,7 +117,7 @@ Resources:
                     - lambda.amazonaws.com
                 Action:
                   - 'sts:AssumeRole'
-          Path: /         
+          Path: /
           Policies:
             - PolicyName: ct_cro_producer
               PolicyDocument:
@@ -198,12 +212,12 @@ Resources:
         ServiceToken: !GetAtt 'CopyZipsFunction.Arn'
         DestBucket: !Ref 'LambdaZipsBucket'
         #update this to match AWS public bucket
-        #s3://marketplace-sa-resources/ct-blogs-content/ct_configrecorder_override_consumer_v2.zip
-        #s3://marketplace-sa-resources/ct-blogs-content/ct_configrecorder_override_producer.zip
-        SourceBucket: marketplace-sa-resources
+        #s3://vinjak-outbox/ct-blogs-content/ct_configrecorder_override_consumer_v2.zip
+        #s3://vinjak-outbox/ct-blogs-content/ct_configrecorder_override_producer_v2.zip
+        SourceBucket: !Ref SourceS3BucketName
         Prefix: ct-blogs-content/
         Objects:
-          - 'ct_configrecorder_override_producer.zip'
+          - 'ct_configrecorder_override_producer_v2.zip'
           - 'ct_configrecorder_override_consumer_v2.zip'
 
     CopyZipsRole:
@@ -229,7 +243,7 @@ Resources:
                     - s3:GetObject
                     - s3:GetObjectTagging
                   Resource:
-                    - !Sub 'arn:${AWS::Partition}:s3:::marketplace-sa-resources/ct-blogs-content/*'
+                    - !Sub 'arn:${AWS::Partition}:s3:::${SourceS3BucketName}/ct-blogs-content/*'
                 - Effect: Allow
                   Action:
                     - s3:PutObject

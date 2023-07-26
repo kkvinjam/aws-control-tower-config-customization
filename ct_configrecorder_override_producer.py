@@ -24,8 +24,74 @@ import os
 import logging
 import ast
 
+CFT_MESSAGE = 'overriding config recorder for ALL accounts because of first run after function deployment from CloudFormation'
+
+def process_eb_event(event, sqs_url, accounts_list, action):
+    '''
+    Function to process EventBridge events.
+    '''
+
+    event_source = event['source']
+    event_detail = event['detail']
+    service_event = event_detail['serviceEventDetails']
+    logging.info(f'Event Source: {event_source}')
+    logging.info(f'Service Event: {service_event}')
+
+    if event_source == 'aws.controltower':
+        event_name = event_detail['eventName']
+        logging.info(f'EventBridge Event Name: {event_name}')
+        logging.info(f'Event Source: {event_source}')
+        logging.info(f'Event Name: {event_name}')
+
+        if event_name == 'UpdateManagedAccount':
+            account = service_event['updateManagedAccountStatus']['account']['accountId']
+            logging.info(f'overriding config recorder for SINGLE account: {account}')
+            override_config_recorder(accounts_list, sqs_url, account, 'controltower', action)
+        elif event_name == 'CreateManagedAccount':
+            account = service_event['createManagedAccountStatus']['account']['accountId']
+            logging.info(f'overriding config recorder for SINGLE account: {account}')
+            override_config_recorder(accounts_list, sqs_url, account, 'controltower', action)
+        elif event_name == 'UpdateLandingZone':
+            logging.info('overriding config recorder for ALL accounts due to UpdateLandingZone event')
+            override_config_recorder(accounts_list, sqs_url, '', 'controltower', action)
+        else:
+            logging.info('No action taken')
+    else:
+        logging.info('Unsupported event recieved: {event_source}')
+
+
+def process_cft_event(event, context, sqs_url, acounts_list, action):
+    '''
+    Function to process CloudFormation events.
+    '''
+
+    request_type = event['RequestType']
+    logging.info(f'Request Type: {request_type}')
+    response = {}
+
+    if request_type == 'Create':
+        logging.info('CREATE : {CFT_MESSAGE}')
+        override_config_recorder(acounts_list, sqs_url, '', 'Create', action)
+        cfnresource.send(event, context, cfnresource.SUCCESS, response, "CustomResourcePhysicalID")
+    elif request_type == 'Update':
+        logging.info('UPDATE : {CFT_MESSAGE}')
+        override_config_recorder(acounts_list, sqs_url, '', 'Update', action)
+        update_account_list(acounts_list, sqs_url)
+        cfnresource.send(event, context, cfnresource.SUCCESS, response, "CustomResourcePhysicalID")
+    elif request_type == 'Delete':
+        logging.info('DELETE : {CFT_MESSAGE}')
+        override_config_recorder(acounts_list, sqs_url, '', 'Delete', action)
+        cfnresource.send(event, context, cfnresource.SUCCESS, response, "CustomResourcePhysicalID")
+    else:
+        logging.info('Unsupported Request Type: {request_type}')
+        cfnresource.send(event, context, cfnresource.SUCCESS, response, "CustomResourcePhysicalID")
+
+
 def lambda_handler(event, context):
-    
+    '''
+    Lambda handler function.
+    '''
+
     LOG_LEVEL = os.getenv('LOG_LEVEL')
     logging.getLogger().setLevel(LOG_LEVEL)
 
@@ -33,66 +99,26 @@ def lambda_handler(event, context):
         logging.info('Event Data: ')
         logging.info(event)
         sqs_url = os.getenv('SQS_URL')
-        excluded_accounts = os.getenv('EXCLUDED_ACCOUNTS')
-        logging.info(f'Excluded Accounts: {excluded_accounts}')
+        acounts_list = os.getenv('ACCOUNTS_LIST')
+        action = os.getenv('ACTION')
+        logging.info(f'Excluded Accounts: {acounts_list}')
         sqs_client = boto3.client('sqs')
-        
+
         # Check if the lambda was trigerred from EventBridge.
         # If so extract Account and Event info from the event data.
-        
-        is_eb_trigerred = 'source' in event
-        
-        logging.info(f'Is EventBridge Trigerred: {str(is_eb_trigerred)}')
-        event_source = ''
-        
-        if is_eb_trigerred:
+
+        if 'source' in event:
             event_source = event['source']
-            logging.info(f'Control Tower Event Source: {event_source}')
-            event_name = event['detail']['eventName']
-            logging.info(f'Control Tower Event Name: {event_name}')
-        
-        if event_source == 'aws.controltower' and event_name == 'UpdateManagedAccount':    
-            account = event['detail']['serviceEventDetails']['updateManagedAccountStatus']['account']['accountId']
-            logging.info(f'overriding config recorder for SINGLE account: {account}')
-            override_config_recorder(excluded_accounts, sqs_url, account, 'controltower')
-        elif event_source == 'aws.controltower' and event_name == 'CreateManagedAccount':  
-            account = event['detail']['serviceEventDetails']['createManagedAccountStatus']['account']['accountId']
-            logging.info(f'overriding config recorder for SINGLE account: {account}')
-            override_config_recorder(excluded_accounts, sqs_url, account, 'controltower')
-        elif event_source == 'aws.controltower' and event_name == 'UpdateLandingZone':
-            logging.info('overriding config recorder for ALL accounts due to UpdateLandingZone event')
-            override_config_recorder(excluded_accounts, sqs_url, '', 'controltower')
-        elif ('LogicalResourceId' in event) and (event['RequestType'] == 'Create'):
-            logging.info('CREATE CREATE')
-            logging.info(
-                'overriding config recorder for ALL accounts because of first run after function deployment from CloudFormation')
-            override_config_recorder(excluded_accounts, sqs_url, '', 'Create')
-            response = {}
-            ## Send signal back to CloudFormation after the first run
-            cfnresource.send(event, context, cfnresource.SUCCESS, response, "CustomResourcePhysicalID")
-        elif ('LogicalResourceId' in event) and (event['RequestType'] == 'Update'):
-            logging.info('Update Update')
-            logging.info(
-                'overriding config recorder for ALL accounts because of first run after function deployment from CloudFormation')
-            override_config_recorder(excluded_accounts, sqs_url, '', 'Update')
-            response = {}
-            update_excluded_accounts(excluded_accounts,sqs_url)
-            
-            ## Send signal back to CloudFormation after the first run
-            cfnresource.send(event, context, cfnresource.SUCCESS, response, "CustomResourcePhysicalID")    
-        elif ('LogicalResourceId' in event) and (event['RequestType'] == 'Delete'):
-            logging.info('DELETE DELETE')
-            logging.info(
-                'overriding config recorder for ALL accounts because of first run after function deployment from CloudFormation')
-            override_config_recorder(excluded_accounts, sqs_url, '', 'Delete')
-            response = {}
-            ## Send signal back to CloudFormation after the final run
-            cfnresource.send(event, context, cfnresource.SUCCESS, response, "CustomResourcePhysicalID")
+            logging.info(f'EventBridge event recieved: {event_source}')
+            process_eb_event(event, sqs_url, acounts_list, action)
+        elif 'LogicalResourceId' in event:
+            logging.info('CloudFormation event recieved')
+            process_cft_event(event, context, sqs_url, acounts_list, action)
         else:
             logging.info("No matching event found")
 
         logging.info('Execution Successful')
-        
+
         # TODO implement
         return {
             'statusCode': 200
@@ -104,78 +130,92 @@ def lambda_handler(event, context):
         logging.exception(f'{exception_type}: {exception_message}')
 
 
-def override_config_recorder(excluded_accounts, sqs_url, account, event):
-    
+def override_config_recorder(acounts_list, sqs_url, account, event, action):
+    '''
+    Function to override config recorder for all accounts.
+    '''
+
+    CONFIG_STACK='AWSControlTowerBP-BASELINE-CONFIG'
     try:
         client = boto3.client('cloudformation')
-        # Create a reusable Paginator
         paginator = client.get_paginator('list_stack_instances')
-        
-        # Create a PageIterator from the Paginator
-        if account == '':
-            page_iterator = paginator.paginate(StackSetName ='AWSControlTowerBP-BASELINE-CONFIG')
-        else:
-            page_iterator = paginator.paginate(StackSetName ='AWSControlTowerBP-BASELINE-CONFIG', StackInstanceAccount=account)
-            
+        instance_list = []
         sqs_client = boto3.client('sqs')
+
+        if not account:
+            page_iterator = paginator.paginate(StackSetName=CONFIG_STACK)
+        else:
+            page_iterator = paginator.paginate(StackSetName=CONFIG_STACK, StackInstanceAccount=account)
+
         for page in page_iterator:
-            logging.info(page)
-            
-            for item in page['Summaries']:
-                account = item['Account']
-                region = item['Region']
-                send_message_to_sqs(event, account, region, excluded_accounts, sqs_client, sqs_url)
-                    
+            instance_list.extend(page['Summaries'])
+
+        for item in instance_list:
+            account = item['Account']
+            region = item['Region']
+            send_message_to_sqs(event, account, region, acounts_list, sqs_client, sqs_url, action)
+
     except Exception as e:
         exception_type = e.__class__.__name__
         exception_message = str(e)
         logging.exception(f'{exception_type}: {exception_message}')
 
-def send_message_to_sqs(event, account, region, excluded_accounts, sqs_client, sqs_url):
-    
+
+def send_message_to_sqs(event, account, region, acounts_list, sqs_client, sqs_url, action):
+    '''
+    Function to send message to SQS.
+    '''
     try:
 
         #Proceed only if the account is not excluded
-        if account not in excluded_accounts:
-        
-            #construct sqs message
-            sqs_msg = f'{{"Account": "{account}", "Region": "{region}", "Event": "{event}"}}'
+        if action == 'EXLUDEACCOUNTS':
+            if account not in acounts_list:
+                #construct sqs message
+                sqs_msg = f'{{"Account": "{account}", "Region": "{region}", "Event": "{event}"}}'
+                #send message to sqs
+                response = sqs_client.send_message(
+                QueueUrl=sqs_url,
+                MessageBody=sqs_msg)
+                logging.info(f'message sent to sqs: {sqs_msg}')
+            else:
+                logging.info(f'Account excluded: {account}')
+        elif action == 'INCLUDEACCOUTNS':
+            if account in acounts_list:
+                #construct sqs message
+                sqs_msg = f'{{"Account": "{account}", "Region": "{region}", "Event": "{event}"}}'
+                #send message to sqs
+                response = sqs_client.send_message(
+                QueueUrl=sqs_url,
+                MessageBody=sqs_msg)
+                logging.info(f'message sent to sqs: {sqs_msg}')
+            else:
+                logging.info(f'Account excluded: {account}')
+        else:
+            logging.info(f'Unsupported action: {action}, No action taken')
 
-            #send message to sqs
-            response = sqs_client.send_message(
-            QueueUrl=sqs_url,
-            MessageBody=sqs_msg)
-            logging.info(f'message sent to sqs: {sqs_msg}')
-            
-        else:    
-            logging.info(f'Account excluded: {account}')
-                
     except Exception as e:
         exception_type = e.__class__.__name__
         exception_message = str(e)
-        logging.exception(f'{exception_type}: {exception_message}') 
-                   
-def update_excluded_accounts(excluded_accounts,sqs_url):
-    
+        logging.exception(f'{exception_type}: {exception_message}')
+
+
+def update_account_list(account_list,sqs_url):
+
     try:
-        acctid = boto3.client('sts')
-        
-        new_excluded_accounts = "['" + acctid.get_caller_identity().get('Account') + "']"
-        
-        logging.info(f'templist: {new_excluded_accounts}')
-        
-        templist=ast.literal_eval(excluded_accounts)
-        
+        sts_client = boto3.client('sts')
+        new_account_list = "['" + sts_client.get_caller_identity().get('Account') + "']"
+        logging.info(f'templist: {new_account_list}')
+        templist=ast.literal_eval(account_list)
+
         templist_out=[]
-        
+
         for acct in templist:
-            
-            if acctid.get_caller_identity().get('Account') != acct:
+            if sts_client.get_caller_identity().get('Account') != acct:
                 templist_out.append(acct)
                 logging.info(f'Delete request sent: {acct}')
-                override_config_recorder(new_excluded_accounts, sqs_url, acct, 'Delete')
-        
+                override_config_recorder(new_account_list, sqs_url, acct, 'Delete')
+
     except Exception as e:
         exception_type = e.__class__.__name__
         exception_message = str(e)
-        logging.exception(f'{exception_type}: {exception_message}')  
+        logging.exception(f'{exception_type}: {exception_message}')
